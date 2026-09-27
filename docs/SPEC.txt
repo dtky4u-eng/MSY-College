@@ -1,0 +1,217 @@
+﻿[Heading1] RKNexora ERP — Application Requirements Specification
+Sep 26, 2026 · @Deepak Kumar
+[Heading2] 1. Introduction
+RKNexora ERP is a web-based internship management system that runs the full NEP 2020 / CBCS undergraduate internship lifecycle — from college-verified student registration and online fee payment to learning, attendance, assessment and QR-verified certificates.
+Purpose. This specification records what the application does today, reverse-engineered from the public site (rknexora.org), the registration and login flows, and the client-side route and API surface. It is meant as a baseline for QA, change requests and new-feature scoping.
+Scope. Public marketing site, student self-registration (6 steps), authentication, and four role portals: Student, College, Mentor and Admin. Authenticated screens were analysed from their UI definitions, not from live data, since no test credentials were used.
+Business context.
+[ListParagraph] Operator: RK NEXORA PRIVATE LIMITED (MSME registered, MCA incorporated; claims AICTE alignment and ISO 9001:2015).
+[ListParagraph] Target users: 4-year CBCS UG students who must complete an internship of about 120 hours for 4 academic credits.
+[ListParagraph] Revenue model: students pay a domain-wise internship fee online; each partner college earns a configurable revenue share, settled offline by RKNexora.
+[ListParagraph] Stated reach: 10,000+ students, 200+ partner colleges, 50+ internship domains.
+Tech stack observed. Next.js (App Router) front end with Tailwind CSS; REST back end under role-scoped endpoints; Razorpay and Cashfree payment gateways; bilingual UI (English + Hindi) on student-facing screens.
+[Heading2] 2. User roles and access
+The system has four authenticated roles plus anonymous visitors; login routes each user to /student, /college, /mentor or /admin based on the role returned by the server.
+Role | Created by | Core responsibilities | Data scope
+Visitor | — | Browse domains, process and compliance info; start registration | Public content only
+Student | Self-registers after college record match | Pay fee, learn, attend, submit work, download documents | Own record only
+College | Admin ("Add College" creates college + college-admin login) | Upload student database, track registrations, payments, progress; reset student passwords; download certificates | Students of own college
+Mentor | Admin ("Add Mentor", tied to one domain) | Manage chapter resources and quizzes, review submissions, assess students, grant quiz reattempts | Assigned students, own domain
+Admin (RKNexora) | System | Master data, colleges, mentors, students, internships, payments, settlements, live classes, routines, messaging, bulk automation, reports | All data
+Access rules
+[ListParagraph] AR-1: Login accepts username, email or RK Nexora registration number, plus password.
+[ListParagraph] AR-2: Sessions use access + refresh tokens (/auth/refresh); protected routes show "Restoring session…" then redirect to /login if unauthenticated.
+[ListParagraph] AR-3: An unknown role in the login response must be rejected with an error.
+[ListParagraph] AR-4: Forgot-password sends a reset link to the registered email; reset is completed via /auth/reset-password.
+[ListParagraph] AR-5: College users may change passwords only for students of their own college.
+[ListParagraph] AR-6: Mentors see only students assigned to them and only chapters in their domain.
+[Heading2] 3. Navigation and module map
+The application exposes 40+ screens across 5 areas; the table lists every route found.
+Area | Route | Screen
+Public | / | Landing: hero, About, Top domains, 8-step process, NEP 2020 benefits, Why us, Recognitions, Contact
+Public | /register | Student Internship Registration (6-step wizard)
+Public | /login, /forgot-password | Secure login, password reset request
+Public | /terms-and-conditions, /privacy-policy, /refund-cancellation-policy | Legal pages
+Student | /student | Student Dashboard
+Student | /student/learning | Learning Modules (chapters, resources, quizzes)
+Student | /student/attendance | Attendance calendar and history
+Student | /student/logbook | Digital Log Book
+Student | /student/assignments | Assignments
+Student | /student/live-project | Live Project Upload
+Student | /student/report | Internship Report upload
+Student | /student/routine | Published routines
+Student | /student/downloads | Download Center
+Student | /student/profile | My Profile
+College | /college | Internship ERP Management dashboard
+College | /college/upload | Upload Student Database (Excel)
+College | /college/students | Students & Certificates
+College | /college/registrations | Student Registrations
+College | /college/payments | My Payments (settlements)
+College | /college/profile | College Profile
+Mentor | /mentor | Mentor Dashboard
+Mentor | /mentor/students | Assigned Students
+Mentor | /mentor/resources | Learning Resources
+Mentor | /mentor/quizzes | Mentor Quizzes
+Mentor | /mentor/quiz-reattempts | Quiz Reattempts
+Mentor | /mentor/reviews | Submission Reviews
+Mentor | /mentor/assessments | Student Assessment
+Admin | /admin | Admin Dashboard + Send Student Message
+Admin | /admin/students, /admin/students/[id] | Student list, import, edit student
+Admin | /admin/internships | Start internships (single / bulk)
+Admin | /admin/colleges, /new, /[id]/edit, /[id]/domain-fees | College management and domain fees
+Admin | /admin/mentors, /new, /[id]/edit, /[id]/assign-students | Mentor management and assignment
+Admin | /admin/learning | Learning Setup: sectors, domains, modules, chapters, resources, quizzes
+Admin | /admin/payments | Payment Management
+Admin | /admin/college-payments | College Payments (settlements)
+Admin | /admin/live-classes | Live Classes
+Admin | /admin/routines | Routine Management
+Admin | /admin/bulk | Bulk Automation Center
+Admin | /admin/quiz-reattempts | Quiz reattempt control
+Admin | /admin/reports | Reports & Analytics
+Footer links for "Track Application", "College Login", "Register College" and "Resources" are displayed as text but are not linked to any route.
+[Heading2] 4. Functional requirements
+Requirements are numbered by module; each reflects behaviour or validation present in the current build.
+[Heading3] 4.1 Public website
+[ListParagraph] FR-PUB-1: Show hero with "Apply for Internship" (to /register) and "Explore Domains" (anchor).
+[ListParagraph] FR-PUB-2: List top domains: Web Development, AI & ML, Data Analytics, Digital Marketing, Business Management, Human Resources, Project Management, Agri-Business.
+[ListParagraph] FR-PUB-3: Explain the 8-step journey: Registration, Document Verification, Domain Selection, Mentor Allocation, Training & Live Projects, Attendance & Logbook, Report & Evaluation, Certificate.
+[ListParagraph] FR-PUB-4: Explain NEP 2020 value: mandatory, 4 credits, about 120 hours, report and certificate.
+[ListParagraph] FR-PUB-5: Show contact (+91 9693275424, helpdesk@rknexora.org) and legal policy links.
+[Heading3] 4.2 Student registration (6-step wizard, bilingual)
+[ListParagraph] Verify — Student enters the University/College Registration Number from the admit card. The system matches it against the college-uploaded record and resumes from the last saved step. Roll number, mobile or RK Nexora number must not be accepted.
+[ListParagraph] Details — Name is pre-filled from the college record. Student confirms Father Name, Gender (Male/Female/Other), DOB, Programme, Major Subject, Session (e.g. 2023-27, 2024-28), Semester (4, 5). Student sets Mobile (10 digits), Email, Username (min 4 chars), Password (min 8) and Confirm Password.
+[ListParagraph] Domain — Student picks one domain; any stream may choose any domain. Screen shows fee, duration (hours) and "Certificate Included". Fee is the college-specific fee if set, else the default.
+[ListParagraph] Documents — Passport photo and latest semester admit card are mandatory.
+[ListParagraph] Review — Student confirms all data. Confirmation locks details and documents permanently.
+[ListParagraph] Payment — System creates a gateway order (Razorpay or Cashfree, chosen by server). Account activates only after server-side verification. A success screen offers Download Receipt and Go to Login.
+[ListParagraph] FR-REG-1: Locked registrations cannot be edited; already-paid users are sent to login.
+[ListParagraph] FR-REG-2: Handle "payment received, awaiting confirmation" and "paid but verification failed — contact support with payment ID" states.
+[ListParagraph] FR-REG-3: RK Nexora Registration Number becomes active after payment.
+[Heading3] 4.3 Student portal
+[ListParagraph] FR-STU-1 Dashboard: internship status, start date, course progress, hours remaining, overall progress; summaries for learning, quizzes, logbook, attendance, live project, report, certificate eligibility; admin announcements; recent activity.
+[ListParagraph] FR-STU-2 Access states: Waiting to Start (no start date), Not Started (future date), Active, Completed (attendance locked), Blocked.
+[ListParagraph] FR-STU-3 Attendance: daily Check In / Check Out; statuses Present, Half Day, Absent, Approved leave, Not Marked; monthly calendar, percentage, history with date/status search.
+[ListParagraph] FR-STU-4 Learning: modules and chapters unlock sequentially. Chapters have recorded lecture (minimum watch time), YouTube, PDF, notes or external links, and a reading-time requirement. A chapter completes by "Mark Complete" or by passing its quiz.
+[ListParagraph] FR-STU-5 Quizzes: passing score, limited attempts, optional time limit; Start / Continue / Retry / View Result.
+[ListParagraph] FR-STU-6 Engagement: send heartbeats while learning so the server can count active learning hours.
+[ListParagraph] FR-STU-7 Assignments: view due date and max marks, download brief, upload PDF/DOC/DOCX/PPT/PPTX/ZIP up to 10 MB. See mentor feedback and resubmit unless approved.
+[ListParagraph] FR-STU-8 Logbook: daily entry with hours worked and skills learned.
+[ListParagraph] FR-STU-9 Live project: title, project report and photos. Internship report: upload final signed report.
+[ListParagraph] FR-STU-10 Routine: view and download the active published routine (PDF/image).
+[ListParagraph] FR-STU-11 Download Center: Offer Letter, Acceptance Letter, Attendance Sheet, Digital Logbook, Internship Report, Assessment Marksheet, Internship Certificate, and payment receipts.
+[ListParagraph] FR-STU-12 Profile: read-only personal, academic and internship data. Student can edit only mobile (10–15 digits), email and profile photo URL.
+[ListParagraph] FR-STU-13 Notifications: unread count, mark read, mark all read. Upcoming live classes with join/leave tracking and a popup before start.
+[Heading3] 4.4 College portal
+[ListParagraph] FR-COL-1 Dashboard: total students, active internships, average progress, college revenue. Also pending students, mentor assigned, 12-month registration trend, domain distribution, payment summary, revenue split (total vs RKNexora share), monthly and domain-wise revenue, recent students.
+[ListParagraph] FR-COL-2 Upload: import students from one .xlsx/.xls file up to 10 MB using the template. Show total rows, imported count and row-level warnings.
+[ListParagraph] FR-COL-3 Students & Certificates: search by name, registration, email or mobile. View and download certificates; change a student's password.
+[ListParagraph] FR-COL-4 Registrations: track registration status of uploaded students.
+[ListParagraph] FR-COL-5 Payments: student collection, earned share, amount received, pending balance, settlement progress, and payment history (date, mode such as bank transfer, transaction no.).
+[ListParagraph] FR-COL-6 Profile: edit name, university, principal, coordinator, mobile (10 digits), email, state, district, pincode (6 digits), address. College code is not editable.
+[Heading3] 4.5 Mentor portal
+[ListParagraph] FR-MEN-1 Dashboard: assigned, active and completed students; pending reviews and assessments; average progress; students with quiz attempts exhausted; recently assigned students.
+[ListParagraph] FR-MEN-2 Resources: add, edit, delete and reorder chapter resources in own domain. Types: video, PDF, text/notes, external link, source code, other. Fields: title, sort order (min 1), primary flag, file.
+[ListParagraph] FR-MEN-3 Quizzes: create per chapter with passing score 0–100%, attempts (min 1), time limit, randomize and show-result options. Each question has options, a correct answer, marks and an optional explanation.
+[ListParagraph] FR-MEN-4 Quiz reattempts: grant extra attempts to assigned students.
+[ListParagraph] FR-MEN-5 Reviews: review submissions, add comments, approve or request resubmission.
+[ListParagraph] FR-MEN-6 Assessments: rate technical knowledge, problem solving and more (Very Good to Needs Improvement). Add supervisor remarks and recommend a certificate.
+[Heading3] 4.6 Admin portal
+[ListParagraph] FR-ADM-1 Dashboard: KPIs for students, colleges, mentors, domains, active internships, completion rate, payment rate, unassigned, paid, pending and blocked students, pending colleges; charts and top colleges.
+[ListParagraph] FR-ADM-2 Messaging: send a titled message to all paid students or selected paid students.
+[ListParagraph] FR-ADM-3 Colleges: CRUD. Create sets code, university, principal, coordinator, contacts, address, logo (JPG/PNG/WEBP, max 2 MB), revenue share (college % + RKNexora % = 100) and a college-admin login.
+[ListParagraph] FR-ADM-4 Domain fees: per college, custom fee per domain (must be > 0) or fall back to the default fee. Supports bulk set and reset.
+[ListParagraph] FR-ADM-5 Mentors: CRUD with name, employee ID, mobile, email, domain, optional college, photo URL and login (username defaults to employee ID). Assign or remove same-domain students.
+[ListParagraph] FR-ADM-6 Students: filter by college, session, status and payment. Import Excel mapped to a college. Edit details, photo (max 2 MB), status and internship dates (end on or after start). Change password.
+[ListParagraph] FR-ADM-7 Internships: set start date for paid students singly or in bulk with a common start date.
+[ListParagraph] FR-ADM-8 Learning setup: sectors, then domains (with duration hours), modules, chapters, resources and quizzes. Quizzes can be imported from Excel.
+[ListParagraph] FR-ADM-9 Payments: search and filter all payments; view gateway IDs; generate or regenerate receipts. Manual "Mark Paid" or edit is allowed only for created payments and needs a reason of at least 10 characters.
+[ListParagraph] FR-ADM-10 College settlements: record a payment (amount up to remaining balance, UTR/cheque ref, remarks, proof) and keep settlement history.
+[ListParagraph] FR-ADM-11 Live classes: schedule by domain, module or chapter with title, meeting link, date/time, trainer, duration and popup lead time.
+[ListParagraph] FR-ADM-12 Routines: upload PDF/JPG/PNG/WEBP up to 10 MB with title, description, publish date/time and active or hidden status.
+[ListParagraph] FR-ADM-13 Bulk automation: filter students, preview (matched students, working days, estimated records), then run as a tracked job with cancel and retry. Operations: full lifecycle, attendance, learning completion, assessment, results, completion, offer letters, attendance sheets, logbooks, reports, QR certificates, ZIP.
+[ListParagraph] FR-ADM-14 Reports: Registration, Attendance, Completion and Payment reports. Filter by college, domain, session, semester, internship and payment status, and date range. Preview with pagination and export to Excel or PDF.
+[Heading2] 5. Data entities and key fields
+Fourteen core entities carry the domain; field names below are those used by the client where visible.
+Entity | Key fields | Relationships / rules
+College | name, code (immutable), university, principal, coordinator, email, mobile, state, district, pincode, address, logo, college_share %, rknexora_share % | Has one college-admin user; has many students; shares must total 100
+User | username, email, password, role (admin / college / mentor / student) | Login by username, email or registration number
+Student | student_id, registration_number (university), portal_registration_number (RK Nexora), name, father_name, gender, dob, programme, major_subject, session, semester, mobile, email, photo, identity_document, marksheet | Belongs to college, domain, mentor; flags registration_locked, next_step
+Sector | name | Has many domains
+Domain | domain_id, domain_name, duration_hours, default fee | Belongs to sector; has modules; overridable per college
+College domain fee | college, domain, college fee | Empty value means use default fee; effective fee = college fee or default
+Module / Chapter | module number + name; chapter number + name | Sequential unlock; chapter has resources and quiz
+Resource | title, type (video, PDF, notes, link, code, other), file or URL, sort order, primary, downloadable | Belongs to chapter
+Quiz | title, description, passing score %, attempts allowed, time limit, randomize, show result | Questions with options, correct answer, marks, explanation; attempts; reattempt grants
+Attendance | date, check-in, check-out, status (present, half day, absent, leave), remarks, learning hours | One row per student per day
+Logbook / Assignment / Project / Report | logbook: date, hours, skills; assignment: due date, max marks, submission, feedback, marks, status; project: title, report, photos; report: file | Reviewed by mentor
+Assessment | criteria ratings, supervisor remarks, certificate recommendation, result, grade | Feeds certificate eligibility
+Payment | transaction_id, order_id, razorpay_order_id / payment_id / signature, cashfree_order_id / transaction_id, amount, method, payment_status (created, pending, success/paid, failed, refunded), failure_reason, paid_at, receipt number / path | One student, many attempts
+College settlement | college, amount, mode, UTR / reference, remarks, proof, date | Cannot exceed remaining earned share
+Live class, Routine, Notification, Bulk job | class: domain / module / chapter, link, trainer, time, duration, popup minutes; routine: title, file, publish time, active; notification: title, body, read; job: type, filters, progress, status, result ZIP | —
+Internship status values seen: pending, active, completed, blocked; the student UI also shows "waiting to start" and "not started" states derived from the start date.
+[Heading2] 6. Key business workflows
+The core flow runs college onboarding → student data upload → self-registration and payment → internship start → delivery → evaluation → certificates → college settlement.
+[Code] flowchart LR  A[Admin adds college + fees] --> B[College uploads student Excel]  B --> C[Student verifies reg. no.]  C --> D[Details, domain, documents]  D --> E[Review and lock]  E --> F[Online payment]  F --> G[Admin assigns mentor + start date]  G --> H[Learning, attendance, logbook]  H --> I[Assignments, project, report]  I --> J[Mentor review + assessment]  J --> K[Results + QR certificate]  K --> L[Admin settles college share]
+WF-1 Payment and activation
+[ListParagraph] Registration is locked, then the server creates an order and returns the gateway (Razorpay or Cashfree).
+[ListParagraph] Checkout opens on the client; on return, the server verifies the signature or order status.
+[ListParagraph] On success, the account activates, a receipt is generated and the portal registration number becomes active.
+[ListParagraph] Failed or unverified payments can be retried; admins can reconcile and mark paid with a reason.
+WF-2 Learning progression
+[ListParagraph] A chapter unlocks only after the previous one is complete.
+[ListParagraph] The student meets the lecture watch time and reading time, tracked through heartbeats.
+[ListParagraph] The chapter completes via its quiz pass, or via "Mark Complete" when no quiz exists.
+[ListParagraph] When attempts run out, the mentor or admin can grant a reattempt.
+WF-3 Submission review
+[ListParagraph] The student submits an assignment, project or report.
+[ListParagraph] The item shows as Pending Review; the mentor approves it or requests resubmission with comments.
+[ListParagraph] Approved items are locked.
+WF-4 Completion and certification
+[ListParagraph] The mentor submits the assessment and recommends a certificate.
+[ListParagraph] Admin publishes results and marks the internship complete, manually or through bulk automation.
+[ListParagraph] Documents are generated: offer letter, attendance sheet, logbook, report, marksheet, QR-verified certificate.
+[ListParagraph] Documents appear in the student Download Center; colleges can download certificates.
+WF-5 College settlement
+[ListParagraph] Earned share = successful student payments × college share %.
+[ListParagraph] Admin records settlements (bank transfer, UTR) up to the pending balance.
+[ListParagraph] The college sees settlement progress and history.
+[Heading2] 7. Non-functional requirements
+The build already sets file limits, role isolation and server-side payment checks; the items below formalise those and add the expectations an ERP of this kind needs.
+ID | Category | Requirement
+NFR-1 | Security | Role-based access enforced on the server for every endpoint, not only by client routing
+NFR-2 | Security | Passwords at least 8 characters, stored hashed; token refresh and logout invalidate sessions
+NFR-3 | Payments | Activation only after server-side signature or webhook verification; idempotent retries; no card data stored
+NFR-4 | Data integrity | Registration and approved submissions immutable after lock; manual payment edits need a reason and are logged
+NFR-5 | Audit | Log admin actions on payments, student status, passwords, bulk jobs and settlements with user and timestamp
+NFR-6 | File handling | Excel imports max 10 MB (.xlsx/.xls); assignments and routines max 10 MB; photos and logos max 2 MB (JPG/PNG/WEBP); type checks on server as well
+NFR-7 | Performance | Paginated lists and reports; bulk jobs run asynchronously with progress, cancel and retry
+NFR-8 | Usability | Bilingual (English/Hindi) student flows; responsive layout for mobile, since most students register by phone
+NFR-9 | Localisation | Consistent language in messages: some college and admin screens mix Hinglish (e.g. "Profile load nahi hua")
+NFR-10 | Verification | Certificates carry a QR code that resolves to a public verification page
+NFR-11 | Privacy | Personal data and documents (ID, marksheet, photo) visible only to the student, their college, assigned mentor and admin; policy pages published
+NFR-12 | Availability | Payment and registration paths monitored; clear recovery path if a payment succeeds but verification fails
+[Heading2] 8. Observations, gaps and open questions
+Several screens look unfinished or hard-coded; these should be confirmed before the spec is used as a baseline.
+Observed gaps
+# | Area | Observation | Suggested requirement
+G-1 | Public footer | "Track Application", "College Login", "Register College", "Upload Students", "Resources" are not linked | Link or remove; college login can reuse /login
+G-2 | College registrations, mentor reviews and assessments | Screens contain static sample data ("Ananya Sharma", "R. Sharma", "Submitted 20 July 2026") | Bind to live APIs (/mentor/reviews, /mentor/assessments exist)
+G-3 | Certificate verification | No public page for QR verification was found | Add a public /verify page by certificate ID
+G-4 | Registration step 2 | Session (2023-27, 2024-28) and semester (4, 5) options are hard-coded | Drive from admin master data
+G-5 | Student profile | Photo is a URL field; "file upload is not available" | Allow image upload with 2 MB limit
+G-6 | Learning | "YouTube watch tracking is not enabled yet" | Decide whether YouTube time counts toward hours
+G-7 | College and admin screens | Hinglish messages and console logging of API responses | Standardise copy; remove debug logs in production
+G-8 | Landing page | Dashboard mock lists "Mentoring", "Certificates", "Settings" menus not present in the student portal | Align marketing mock with the real menu
+G-9 | Bulk automation | Can generate attendance, logbooks and assessments automatically | Define audit and approval controls so generated records are distinguishable from real activity
+Open questions
+[ListParagraph] ☐ Which gateway is primary, Razorpay or Cashfree, and what rule picks it?
+[ListParagraph] ☐ Is a refund flow in scope? The status "refunded" exists but there is no UI for it.
+[ListParagraph] ☐ What are the exact certificate eligibility rules (minimum hours, attendance %, quiz average, approvals)?
+[ListParagraph] ☐ Can colleges self-register, or is onboarding admin-only?
+[ListParagraph] ☐ Should mentors be able to mark attendance or approve leave ("Approved leave" status exists)?
+[ListParagraph] ☐ What are the retention period and consent basis for student ID documents?
+Method note. This spec was built from the public pages, the registration and login screens, and the UI text and route definitions shipped to the browser. No accounts were created and no forms were submitted, so server-side rules are inferred.
+Sources
+[ListParagraph] RKNexora home
+[ListParagraph] Student registration
+[ListParagraph] Login

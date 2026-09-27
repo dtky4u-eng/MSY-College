@@ -1,0 +1,629 @@
+// MSY College ERP data model.
+// SQLite for local development; switch provider to "postgresql" for production.
+// Enum-like fields are plain strings; allowed values are documented inline and
+// mirrored as TypeScript unions in src/lib/constants.ts. Money is stored in paise (Int).
+// JSON payloads are stored as strings (parse with src/lib/json.ts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Identity & access ─────────────────────────────
+
+model User {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  email        String?   @unique
+  passwordHash String
+  role         String // ADMIN | COLLEGE | MENTOR | STUDENT
+  active       Boolean   @default(true) // students become active only after verified payment
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions      Session[]
+  resets        PasswordReset[]
+  student       Student?
+  mentor        Mentor?
+  college       College?        @relation("CollegeAdmin")
+  notifications Notification[]
+  auditLogs     AuditLog[]
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique // sha256 of the refresh token
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+// ───────────────────────────── Master data ─────────────────────────────
+
+model College {
+  id            String   @id @default(cuid())
+  name          String
+  code          String   @unique // immutable after creation
+  university    String
+  principal     String?
+  coordinator   String?
+  email         String?
+  mobile        String?
+  state         String?
+  district      String?
+  pincode       String?
+  address       String?
+  logoFileId    String?
+  collegeShare  Float    @default(20) // percent; collegeShare + rknexoraShare = 100
+  rknexoraShare Float    @default(80)
+  status        String   @default("ACTIVE") // ACTIVE | PENDING | INACTIVE
+  adminUserId   String?  @unique
+  adminUser     User?    @relation("CollegeAdmin", fields: [adminUserId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  students    Student[]
+  mentors     Mentor[]
+  domainFees  CollegeDomainFee[]
+  settlements CollegeSettlement[]
+  imports     StudentImport[]
+}
+
+/// Admin-managed dropdown values (sessions, semesters, programmes) — replaces hard-coded options (G-4).
+model MasterOption {
+  id     String  @id @default(cuid())
+  type   String // SESSION | SEMESTER | PROGRAMME
+  value  String
+  label  String
+  sort   Int     @default(0)
+  active Boolean @default(true)
+
+  @@unique([type, value])
+}
+
+model Sector {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  domains   Domain[]
+}
+
+model Domain {
+  id            String   @id @default(cuid())
+  code          String   @unique // e.g. WEB, AIML
+  name          String
+  description   String?
+  sectorId      String
+  sector        Sector   @relation(fields: [sectorId], references: [id])
+  durationHours Int      @default(120)
+  defaultFee    Int // paise
+  active        Boolean  @default(true)
+  featured      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  modules     Module[]
+  students    Student[]
+  mentors     Mentor[]
+  fees        CollegeDomainFee[]
+  assignments Assignment[]
+  liveClasses LiveClass[]
+  routines    Routine[]
+}
+
+model CollegeDomainFee {
+  id        String  @id @default(cuid())
+  collegeId String
+  college   College @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+  domainId  String
+  domain    Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  fee       Int // paise, must be > 0; absent row = default fee
+
+  @@unique([collegeId, domainId])
+}
+
+// ───────────────────────────── Learning content ─────────────────────────────
+
+model Module {
+  id          String    @id @default(cuid())
+  domainId    String
+  domain      Domain    @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  number      Int
+  name        String
+  description String?
+  chapters    Chapter[]
+  liveClasses LiveClass[]
+
+  @@unique([domainId, number])
+}
+
+model Chapter {
+  id              String   @id @default(cuid())
+  moduleId        String
+  module          Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  number          Int
+  name            String
+  description     String?
+  minWatchSeconds Int      @default(0) // minimum lecture watch time
+  minReadSeconds  Int      @default(0) // reading-time requirement
+  resources       Resource[]
+  quiz            Quiz?
+  progress        ChapterProgress[]
+  liveClasses     LiveClass[]
+
+  @@unique([moduleId, number])
+}
+
+model Resource {
+  id           String   @id @default(cuid())
+  chapterId    String
+  chapter      Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  title        String
+  type         String // VIDEO | PDF | NOTES | LINK | CODE | OTHER
+  url          String? // external / YouTube URL
+  fileId       String? // uploaded file
+  content      String? // notes text (markdown-ish)
+  sortOrder    Int      @default(1)
+  primary      Boolean  @default(false)
+  downloadable Boolean  @default(true)
+  createdById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Quiz {
+  id               String   @id @default(cuid())
+  chapterId        String   @unique
+  chapter          Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  title            String
+  description      String?
+  passingScore     Int      @default(60) // percent 0–100
+  attemptsAllowed  Int      @default(3)
+  timeLimitMinutes Int? // null = untimed
+  randomize        Boolean  @default(false)
+  showResult       Boolean  @default(true)
+  createdById      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  questions Question[]
+  attempts  QuizAttempt[]
+  grants    QuizReattemptGrant[]
+}
+
+model Question {
+  id           String  @id @default(cuid())
+  quizId       String
+  quiz         Quiz    @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  text         String
+  options      String // JSON string[]
+  correctIndex Int
+  marks        Int     @default(1)
+  explanation  String?
+  sort         Int     @default(0)
+}
+
+model QuizAttempt {
+  id          String    @id @default(cuid())
+  quizId      String
+  quiz        Quiz      @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  startedAt   DateTime  @default(now())
+  expiresAt   DateTime?
+  submittedAt DateTime?
+  questionOrder String // JSON questionId[] as presented
+  answers     String    @default("{}") // JSON { [questionId]: optionIndex }
+  score       Int       @default(0)
+  maxScore    Int       @default(0)
+  percent     Float     @default(0)
+  passed      Boolean   @default(false)
+  generated   Boolean   @default(false)
+
+  @@index([studentId, quizId])
+}
+
+model QuizReattemptGrant {
+  id            String   @id @default(cuid())
+  quizId        String
+  quiz          Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  studentId     String
+  student       Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  extraAttempts Int      @default(1)
+  reason        String?
+  grantedById   String
+  createdAt     DateTime @default(now())
+
+  @@index([studentId, quizId])
+}
+
+// ───────────────────────────── Students & delivery ─────────────────────────────
+
+model Student {
+  id                 String    @id @default(cuid())
+  studentCode        String    @unique // internal student_id, e.g. STU-000123
+  userId             String?   @unique
+  user               User?     @relation(fields: [userId], references: [id])
+  collegeId          String
+  college            College   @relation(fields: [collegeId], references: [id])
+  registrationNumber String    @unique // university/college registration number (admit card)
+  portalRegNo        String?   @unique // MSY College registration number, issued on payment
+  rollNumber         String?
+  name               String
+  fatherName         String?
+  gender             String? // MALE | FEMALE | OTHER
+  dob                DateTime?
+  programme          String?
+  majorSubject       String?
+  session            String? // e.g. 2024-28
+  semester           String? // e.g. 4
+  mobile             String?
+  email              String?
+  photoFileId        String?
+  admitCardFileId    String?
+  domainId           String?
+  domain             Domain?   @relation(fields: [domainId], references: [id])
+  mentorId           String?
+  mentor             Mentor?   @relation(fields: [mentorId], references: [id])
+  mentorAssignedAt   DateTime?
+
+  // Registration wizard
+  nextStep           Int       @default(1) // 1 verify · 2 details · 3 domain · 4 documents · 5 review · 6 payment · 7 done
+  registrationLocked Boolean   @default(false)
+  lockedAt           DateTime?
+  registeredAt       DateTime?
+
+  // Internship lifecycle
+  status             String    @default("PENDING") // PENDING | ACTIVE | COMPLETED | BLOCKED
+  paymentStatus      String    @default("UNPAID") // UNPAID | PAID
+  feeAmount          Int? // paise, captured at registration
+  internshipStart    DateTime?
+  internshipEnd      DateTime?
+  learningSeconds    Int       @default(0) // active learning time from heartbeats
+  resultStatus       String? // PASS | FAIL
+  grade              String?
+  resultPublishedAt  DateTime?
+  completedAt        DateTime?
+  blockedReason      String?
+
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  payments        Payment[]
+  attendance      Attendance[]
+  logbook         LogbookEntry[]
+  submissions     Submission[]
+  progress        ChapterProgress[]
+  quizAttempts    QuizAttempt[]
+  reattemptGrants QuizReattemptGrant[]
+  assessment      Assessment?
+  certificate     Certificate?
+  liveAttendance  LiveClassAttendance[]
+
+  @@index([collegeId])
+  @@index([mentorId])
+  @@index([status, paymentStatus])
+}
+
+model StudentImport {
+  id         String   @id @default(cuid())
+  collegeId  String
+  college    College  @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+  fileName   String
+  totalRows  Int
+  imported   Int
+  skipped    Int
+  warnings   String // JSON { row, message }[]
+  importedBy String
+  createdAt  DateTime @default(now())
+}
+
+model Mentor {
+  id         String    @id @default(cuid())
+  userId     String    @unique
+  user       User      @relation(fields: [userId], references: [id])
+  name       String
+  employeeId String    @unique
+  mobile     String?
+  email      String?
+  domainId   String
+  domain     Domain    @relation(fields: [domainId], references: [id])
+  collegeId  String?
+  college    College?  @relation(fields: [collegeId], references: [id])
+  photoUrl   String?
+  designation String?
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+
+  students    Student[]
+  assessments Assessment[]
+}
+
+model ChapterProgress {
+  id           String    @id @default(cuid())
+  studentId    String
+  student      Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  chapterId    String
+  chapter      Chapter   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  watchSeconds Int       @default(0)
+  readSeconds  Int       @default(0)
+  completed    Boolean   @default(false)
+  completedAt  DateTime?
+  completedVia String? // MANUAL | QUIZ | BULK | ADMIN
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([studentId, chapterId])
+}
+
+model Attendance {
+  id              String    @id @default(cuid())
+  studentId       String
+  student         Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  date            String // YYYY-MM-DD (IST)
+  checkIn         DateTime?
+  checkOut        DateTime?
+  status          String // PRESENT | HALF_DAY | ABSENT | LEAVE
+  remarks         String?
+  learningSeconds Int       @default(0)
+  generated       Boolean   @default(false) // created by bulk automation (G-9)
+  markedById      String? // set when admin/mentor marks or approves leave
+
+  @@unique([studentId, date])
+}
+
+model LogbookEntry {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  date      String // YYYY-MM-DD
+  hours     Float
+  activity  String
+  skills    String
+  generated Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, date])
+}
+
+model Assignment {
+  id          String       @id @default(cuid())
+  domainId    String
+  domain      Domain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  briefFileId String?
+  dueDate     DateTime
+  maxMarks    Int          @default(100)
+  createdById String?
+  createdAt   DateTime     @default(now())
+  submissions Submission[]
+}
+
+/// Assignment, live project and internship report submissions share one review flow (WF-3).
+model Submission {
+  id           String      @id @default(cuid())
+  studentId    String
+  student      Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  kind         String // ASSIGNMENT | PROJECT | REPORT
+  assignmentId String?
+  assignment   Assignment? @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  title        String?
+  description  String?
+  fileId       String?
+  photoFileIds String      @default("[]") // JSON string[] (project photos)
+  status       String      @default("PENDING") // PENDING | APPROVED | RESUBMIT
+  marks        Int?
+  feedback     String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  version      Int         @default(1)
+  history      String      @default("[]") // JSON of previous versions
+  generated    Boolean     @default(false)
+  submittedAt  DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([studentId, kind])
+}
+
+model Assessment {
+  id                   String   @id @default(cuid())
+  studentId            String   @unique
+  student              Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  mentorId             String?
+  mentor               Mentor?  @relation(fields: [mentorId], references: [id])
+  ratings              String // JSON { [criterion]: rating }
+  remarks              String?
+  recommendCertificate Boolean  @default(false)
+  score                Float    @default(0) // percent derived from ratings
+  generated            Boolean  @default(false)
+  submittedAt          DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model Certificate {
+  id            String   @id @default(cuid())
+  certificateNo String   @unique // e.g. MSY/CERT/2026/000123
+  verifyCode    String   @unique // random public code used in QR / verify URL
+  studentId     String   @unique
+  student       Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  issuedAt      DateTime @default(now())
+  revokedAt     DateTime?
+}
+
+// ───────────────────────────── Payments & settlements ─────────────────────────────
+
+model Payment {
+  id                String    @id @default(cuid())
+  transactionId     String    @unique // internal id, e.g. MSYTXN...
+  studentId         String
+  student           Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  gateway           String // RAZORPAY | CASHFREE | SANDBOX | MANUAL
+  orderId           String? // gateway order id (razorpay_order_id / cashfree_order_id / sandbox)
+  gatewayPaymentId  String? // razorpay_payment_id / cashfree cf_payment_id
+  gatewaySignature  String?
+  amount            Int // paise
+  currency          String    @default("INR")
+  method            String? // upi, card, netbanking, bank_transfer...
+  status            String    @default("CREATED") // CREATED | PENDING | SUCCESS | FAILED | REFUNDED | VERIFY_FAILED
+  failureReason     String?
+  paidAt            DateTime?
+  receiptNo         String?   @unique
+  receiptGeneratedAt DateTime?
+  manualReason      String?
+  markedById        String?
+  raw               String? // last gateway payload (JSON) for reconciliation
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([studentId])
+  @@index([status])
+}
+
+model CollegeSettlement {
+  id           String   @id @default(cuid())
+  collegeId    String
+  college      College  @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+  amount       Int // paise
+  mode         String // BANK_TRANSFER | CHEQUE | UPI | CASH | OTHER
+  reference    String? // UTR / cheque no.
+  remarks      String?
+  proofFileId  String?
+  date         DateTime
+  recordedById String
+  createdAt    DateTime @default(now())
+}
+
+// ───────────────────────────── Engagement ─────────────────────────────
+
+model LiveClass {
+  id              String    @id @default(cuid())
+  title           String
+  description     String?
+  domainId        String
+  domain          Domain    @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  moduleId        String?
+  module          Module?   @relation(fields: [moduleId], references: [id])
+  chapterId       String?
+  chapter         Chapter?  @relation(fields: [chapterId], references: [id])
+  meetingLink     String
+  startsAt        DateTime
+  durationMinutes Int       @default(60)
+  trainer         String
+  popupMinutes    Int       @default(10) // show popup this many minutes before start
+  cancelled       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  attendance      LiveClassAttendance[]
+}
+
+model LiveClassAttendance {
+  id          String    @id @default(cuid())
+  liveClassId String
+  liveClass   LiveClass @relation(fields: [liveClassId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  joinedAt    DateTime  @default(now())
+  leftAt      DateTime?
+
+  @@unique([liveClassId, studentId])
+}
+
+model Routine {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  fileId      String
+  domainId    String? // null = all domains
+  domain      Domain?  @relation(fields: [domainId], references: [id])
+  publishAt   DateTime
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String   @default("INFO") // INFO | MESSAGE | PAYMENT | REVIEW | LIVE_CLASS | SYSTEM
+  title     String
+  body      String
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+}
+
+// ───────────────────────────── Operations ─────────────────────────────
+
+model BulkJob {
+  id           String    @id @default(cuid())
+  type         String // FULL_LIFECYCLE | ATTENDANCE | LEARNING | ASSESSMENT | RESULTS | COMPLETION | OFFER_LETTERS | ATTENDANCE_SHEETS | LOGBOOKS | REPORTS | CERTIFICATES | ZIP
+  filters      String // JSON
+  options      String    @default("{}") // JSON
+  status       String    @default("QUEUED") // QUEUED | RUNNING | COMPLETED | FAILED | CANCELLED
+  total        Int       @default(0)
+  processed    Int       @default(0)
+  failed       Int       @default(0)
+  log          String    @default("[]") // JSON { at, level, message }[]
+  resultFileId String?
+  retryOfId    String?
+  createdById  String
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  finishedAt   DateTime?
+}
+
+model FileObject {
+  id           String   @id @default(cuid())
+  originalName String
+  mime         String
+  size         Int
+  path         String // relative to STORAGE_DIR
+  purpose      String // PHOTO | ADMIT_CARD | LOGO | RESOURCE | ASSIGNMENT_BRIEF | SUBMISSION | PROJECT_PHOTO | ROUTINE | SETTLEMENT_PROOF | IMPORT | BULK_RESULT | OTHER
+  ownerUserId  String?
+  studentId    String? // for access checks on personal documents (NFR-11)
+  createdAt    DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id])
+  action    String // e.g. PAYMENT_MARK_PAID, STUDENT_STATUS, PASSWORD_CHANGE, BULK_JOB, SETTLEMENT
+  entity    String
+  entityId  String?
+  details   String   @default("{}")
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     String // JSON
+  updatedAt DateTime @updatedAt
+}

@@ -1,0 +1,174 @@
+// Upload storage with server-side type sniffing and size limits (NFR-6),
+// and per-file access control for personal documents (NFR-11).
+import "server-only";
+import fs from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
+import { prisma } from "./db";
+import { ApiError } from "./http";
+import type { Auth } from "./auth";
+import type { FileObject } from "@prisma/client";
+
+export type FileKind = "pdf" | "jpg" | "png" | "webp" | "doc" | "docx" | "ppt" | "pptx" | "xls" | "xlsx" | "zip" | "txt" | "mp4";
+
+export const KIND_SETS = {
+  image: ["jpg", "png", "webp"] as FileKind[],
+  imageOrPdf: ["jpg", "png", "webp", "pdf"] as FileKind[],
+  excel: ["xlsx", "xls"] as FileKind[],
+  submission: ["pdf", "doc", "docx", "ppt", "pptx", "zip"] as FileKind[],
+  routine: ["pdf", "jpg", "png", "webp"] as FileKind[],
+  resource: ["pdf", "doc", "docx", "ppt", "pptx", "zip", "txt", "mp4", "jpg", "png", "webp", "xlsx"] as FileKind[],
+};
+
+const MIME: Record<FileKind, string> = {
+  pdf: "application/pdf",
+  jpg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  zip: "application/zip",
+  txt: "text/plain; charset=utf-8",
+  mp4: "video/mp4",
+};
+
+export function storageRoot(): string {
+  return path.resolve(process.cwd(), process.env.STORAGE_DIR || "./storage");
+}
+
+function extOf(name: string): string {
+  return (path.extname(name).slice(1) || "").toLowerCase().replace("jpeg", "jpg");
+}
+
+/** Detect the real file type from magic bytes; the extension disambiguates OOXML/OLE containers. */
+export function sniffKind(buf: Buffer, fileName: string): FileKind | null {
+  const ext = extOf(fileName);
+  const b = buf;
+  if (b.length >= 4 && b.slice(0, 4).toString("latin1") === "%PDF") return "pdf";
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
+  if (b.length >= 8 && b.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
+  if (b.length >= 12 && b.slice(0, 4).toString("latin1") === "RIFF" && b.slice(8, 12).toString("latin1") === "WEBP") return "webp";
+  if (b.length >= 8 && b.slice(4, 8).toString("latin1") === "ftyp") return "mp4";
+  if (b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05) ) {
+    if (ext === "docx" || ext === "pptx" || ext === "xlsx") return ext as FileKind;
+    return "zip";
+  }
+  if (b.length >= 8 && b.slice(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))) {
+    if (ext === "doc" || ext === "ppt" || ext === "xls") return ext as FileKind;
+    return null;
+  }
+  if (ext === "txt" && !b.slice(0, 4096).includes(0)) return "txt";
+  return null;
+}
+
+export interface SaveOptions {
+  purpose: string;
+  allowed: FileKind[];
+  maxBytes: number;
+  ownerUserId?: string | null;
+  studentId?: string | null;
+  label?: string; // used in error messages, e.g. "Passport photo"
+}
+
+function humanSize(bytes: number) {
+  return bytes >= 1024 * 1024 ? `${Math.round(bytes / 1024 / 1024)} MB` : `${Math.round(bytes / 1024)} KB`;
+}
+
+export async function saveBuffer(buf: Buffer, originalName: string, opts: SaveOptions): Promise<FileObject> {
+  const label = opts.label ?? "File";
+  if (buf.length === 0) throw new ApiError(422, `${label} is empty`);
+  if (buf.length > opts.maxBytes) throw new ApiError(422, `${label} must be ${humanSize(opts.maxBytes)} or smaller`);
+  const kind = sniffKind(buf, originalName);
+  if (!kind || !opts.allowed.includes(kind)) {
+    throw new ApiError(422, `${label} must be one of: ${opts.allowed.map((k) => k.toUpperCase()).join(", ")}`);
+  }
+  const now = new Date();
+  const rel = path.join(String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), `${crypto.randomUUID()}.${kind}`);
+  const abs = path.join(storageRoot(), rel);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, buf);
+  const safeName = path.basename(originalName).replace(/[^\w.\- ()]/g, "_").slice(0, 150) || `file.${kind}`;
+  return prisma.fileObject.create({
+    data: {
+      originalName: safeName,
+      mime: MIME[kind],
+      size: buf.length,
+      path: rel.replace(/\\/g, "/"),
+      purpose: opts.purpose,
+      ownerUserId: opts.ownerUserId ?? null,
+      studentId: opts.studentId ?? null,
+    },
+  });
+}
+
+export async function saveUpload(file: File, opts: SaveOptions): Promise<FileObject> {
+  if (file.size > opts.maxBytes) throw new ApiError(422, `${opts.label ?? "File"} must be ${humanSize(opts.maxBytes)} or smaller`);
+  const buf = Buffer.from(await file.arrayBuffer());
+  return saveBuffer(buf, file.name, opts);
+}
+
+/** Save generated bytes (PDF/ZIP) without sniff restrictions. */
+export async function saveGenerated(bytes: Uint8Array, name: string, mime: string, purpose: string, ownerUserId?: string | null): Promise<FileObject> {
+  const now = new Date();
+  const ext = extOf(name) || "bin";
+  const rel = path.join(String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), `${crypto.randomUUID()}.${ext}`);
+  const abs = path.join(storageRoot(), rel);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, bytes);
+  return prisma.fileObject.create({
+    data: { originalName: name, mime, size: bytes.length, path: rel.replace(/\\/g, "/"), purpose, ownerUserId: ownerUserId ?? null },
+  });
+}
+
+export async function readStoredFile(file: FileObject): Promise<Buffer> {
+  const abs = path.join(storageRoot(), file.path);
+  if (!abs.startsWith(storageRoot())) throw new ApiError(400, "Invalid path");
+  return fs.readFile(abs);
+}
+
+export async function deleteStoredFile(fileId: string | null | undefined) {
+  if (!fileId) return;
+  const f = await prisma.fileObject.findUnique({ where: { id: fileId } });
+  if (!f) return;
+  await fs.rm(path.join(storageRoot(), f.path), { force: true });
+  await prisma.fileObject.delete({ where: { id: fileId } });
+}
+
+/** Public URL (served by /api/files/[id], which enforces access). */
+export function fileUrl(fileId: string | null | undefined, download = false): string | null {
+  if (!fileId) return null;
+  return `/api/files/${fileId}${download ? "?download=1" : ""}`;
+}
+
+const SHARED_PURPOSES = new Set(["RESOURCE", "ASSIGNMENT_BRIEF", "ROUTINE"]);
+const PUBLIC_PURPOSES = new Set(["LOGO"]);
+
+/** NFR-11: personal documents are visible only to the student, their college, assigned mentor and admin. */
+export async function canAccessFile(auth: Auth | null, file: FileObject): Promise<boolean> {
+  if (PUBLIC_PURPOSES.has(file.purpose)) return true;
+  if (!auth) return false;
+  const { user } = auth;
+  if (user.role === "ADMIN") return true;
+  if (file.ownerUserId === user.id) return true;
+  if (SHARED_PURPOSES.has(file.purpose)) return true;
+
+  if (file.studentId) {
+    const s = await prisma.student.findUnique({
+      where: { id: file.studentId },
+      select: { userId: true, college: { select: { adminUserId: true } }, mentor: { select: { userId: true } } },
+    });
+    if (!s) return false;
+    if (user.role === "STUDENT") return s.userId === user.id;
+    if (user.role === "COLLEGE") return s.college.adminUserId === user.id;
+    if (user.role === "MENTOR") return s.mentor?.userId === user.id;
+  }
+  if (file.purpose === "SETTLEMENT_PROOF" && user.role === "COLLEGE") {
+    const st = await prisma.collegeSettlement.findFirst({ where: { proofFileId: file.id }, select: { college: { select: { adminUserId: true } } } });
+    return st?.college.adminUserId === user.id;
+  }
+  return false;
+}
